@@ -177,9 +177,9 @@ static vm_fault_t ttm_bo_vm_fault(struct vm_fault *vmf)
 		}
 
 		if (bo->moving != moving) {
-			spin_lock(&bdev->glob->lru_lock);
+			spin_lock(&ttm_bo_glob.lru_lock);
 			ttm_bo_move_to_lru_tail(bo, NULL);
-			spin_unlock(&bdev->glob->lru_lock);
+			spin_unlock(&ttm_bo_glob.lru_lock);
 		}
 		dma_fence_put(moving);
 	}
@@ -479,10 +479,14 @@ int ttm_fbdev_mmap(struct vm_area_struct *vma, struct ttm_buffer_object *bo)
 
 	ttm_bo_get(bo);
 
-	vma->vm_ops = &ttm_bo_vm_ops;
-	vma->vm_private_data = bo;
-	vma->vm_flags |= VM_MIXEDMAP;
-	vma->vm_flags |= VM_IO | VM_DONTEXPAND;
+
+	/*
+	 * FIXME: &drm_gem_object_funcs.mmap is called with the fake offset
+	 * removed. Add it back here until the rest of TTM works without it.
+	 */
+	vma->vm_pgoff += drm_vma_node_start(&bo->base.vma_node);
+
+	ttm_bo_mmap_vma_setup(bo, vma);
 	return 0;
 }
 EXPORT_SYMBOL(ttm_fbdev_mmap);

@@ -549,9 +549,6 @@ int drm_gem_shmem_mmap(struct file *filp, struct vm_area_struct *vma)
 	vma->vm_flags &= ~VM_PFNMAP;
 	vma->vm_flags |= VM_MIXEDMAP;
 
-	/* Remove the fake offset */
-	vma->vm_pgoff -= drm_vma_node_start(&shmem->base.vma_node);
-
 	return 0;
 }
 EXPORT_SYMBOL_GPL(drm_gem_shmem_mmap);

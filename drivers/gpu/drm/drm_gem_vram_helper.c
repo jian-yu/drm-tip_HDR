@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+
+#include <drm/drm_debugfs.h>
+#include <drm/drm_device.h>
+#include <drm/drm_file.h>
+#include <drm/drm_framebuffer.h>
+#include <drm/drm_gem_ttm_helper.h>
 #include <drm/drm_gem_vram_helper.h>
 #include <drm/drm_device.h>
 #include <drm/drm_mode.h>
+#include <drm/drm_plane.h>
 #include <drm/drm_prime.h>
-#include <drm/drm_vram_mm_helper.h>
+#include <drm/drm_simple_kms_helper.h>
 #include <drm/ttm/ttm_page_alloc.h>
 
 static const struct drm_gem_object_funcs drm_gem_vram_object_funcs;
@@ -544,6 +551,129 @@ int drm_gem_vram_driver_dumb_mmap_offset(struct drm_file *file,
 EXPORT_SYMBOL(drm_gem_vram_driver_dumb_mmap_offset);
 
 /*
+ * Helpers for struct drm_plane_helper_funcs
+ */
+
+/**
+ * drm_gem_vram_plane_helper_prepare_fb() - \
+ *	Implements &struct drm_plane_helper_funcs.prepare_fb
+ * @plane:	a DRM plane
+ * @new_state:	the plane's new state
+ *
+ * During plane updates, this function pins the GEM VRAM
+ * objects of the plane's new framebuffer to VRAM. Call
+ * drm_gem_vram_plane_helper_cleanup_fb() to unpin them.
+ *
+ * Returns:
+ *	0 on success, or
+ *	a negative errno code otherwise.
+ */
+int
+drm_gem_vram_plane_helper_prepare_fb(struct drm_plane *plane,
+				     struct drm_plane_state *new_state)
+{
+	size_t i;
+	struct drm_gem_vram_object *gbo;
+	int ret;
+
+	if (!new_state->fb)
+		return 0;
+
+	for (i = 0; i < ARRAY_SIZE(new_state->fb->obj); ++i) {
+		if (!new_state->fb->obj[i])
+			continue;
+		gbo = drm_gem_vram_of_gem(new_state->fb->obj[i]);
+		ret = drm_gem_vram_pin(gbo, DRM_GEM_VRAM_PL_FLAG_VRAM);
+		if (ret)
+			goto err_drm_gem_vram_unpin;
+	}
+
+	return 0;
+
+err_drm_gem_vram_unpin:
+	while (i) {
+		--i;
+		gbo = drm_gem_vram_of_gem(new_state->fb->obj[i]);
+		drm_gem_vram_unpin(gbo);
+	}
+	return ret;
+}
+EXPORT_SYMBOL(drm_gem_vram_plane_helper_prepare_fb);
+
+/**
+ * drm_gem_vram_plane_helper_cleanup_fb() - \
+ *	Implements &struct drm_plane_helper_funcs.cleanup_fb
+ * @plane:	a DRM plane
+ * @old_state:	the plane's old state
+ *
+ * During plane updates, this function unpins the GEM VRAM
+ * objects of the plane's old framebuffer from VRAM. Complements
+ * drm_gem_vram_plane_helper_prepare_fb().
+ */
+void
+drm_gem_vram_plane_helper_cleanup_fb(struct drm_plane *plane,
+				     struct drm_plane_state *old_state)
+{
+	size_t i;
+	struct drm_gem_vram_object *gbo;
+
+	if (!old_state->fb)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(old_state->fb->obj); ++i) {
+		if (!old_state->fb->obj[i])
+			continue;
+		gbo = drm_gem_vram_of_gem(old_state->fb->obj[i]);
+		drm_gem_vram_unpin(gbo);
+	}
+}
+EXPORT_SYMBOL(drm_gem_vram_plane_helper_cleanup_fb);
+
+/*
+ * Helpers for struct drm_simple_display_pipe_funcs
+ */
+
+/**
+ * drm_gem_vram_simple_display_pipe_prepare_fb() - \
+ *	Implements &struct drm_simple_display_pipe_funcs.prepare_fb
+ * @pipe:	a simple display pipe
+ * @new_state:	the plane's new state
+ *
+ * During plane updates, this function pins the GEM VRAM
+ * objects of the plane's new framebuffer to VRAM. Call
+ * drm_gem_vram_simple_display_pipe_cleanup_fb() to unpin them.
+ *
+ * Returns:
+ *	0 on success, or
+ *	a negative errno code otherwise.
+ */
+int drm_gem_vram_simple_display_pipe_prepare_fb(
+	struct drm_simple_display_pipe *pipe,
+	struct drm_plane_state *new_state)
+{
+	return drm_gem_vram_plane_helper_prepare_fb(&pipe->plane, new_state);
+}
+EXPORT_SYMBOL(drm_gem_vram_simple_display_pipe_prepare_fb);
+
+/**
+ * drm_gem_vram_simple_display_pipe_cleanup_fb() - \
+ *	Implements &struct drm_simple_display_pipe_funcs.cleanup_fb
+ * @pipe:	a simple display pipe
+ * @old_state:	the plane's old state
+ *
+ * During plane updates, this function unpins the GEM VRAM
+ * objects of the plane's old framebuffer from VRAM. Complements
+ * drm_gem_vram_simple_display_pipe_prepare_fb().
+ */
+void drm_gem_vram_simple_display_pipe_cleanup_fb(
+	struct drm_simple_display_pipe *pipe,
+	struct drm_plane_state *old_state)
+{
+	drm_gem_vram_plane_helper_cleanup_fb(&pipe->plane, old_state);
+}
+EXPORT_SYMBOL(drm_gem_vram_simple_display_pipe_cleanup_fb);
+
+/*
  * PRIME helpers
  */
 
@@ -633,5 +763,172 @@ static const struct drm_gem_object_funcs drm_gem_vram_object_funcs = {
 	.pin	= drm_gem_vram_object_pin,
 	.unpin	= drm_gem_vram_object_unpin,
 	.vmap	= drm_gem_vram_object_vmap,
-	.vunmap	= drm_gem_vram_object_vunmap
+	.vunmap	= drm_gem_vram_object_vunmap,
+	.mmap   = drm_gem_ttm_mmap,
+	.print_info = drm_gem_ttm_print_info,
+};
+
+/*
+ * VRAM memory manager
+ */
+
+/*
+ * TTM TT
+ */
+
+static void backend_func_destroy(struct ttm_tt *tt)
+{
+	ttm_tt_fini(tt);
+	kfree(tt);
+}
+
+static struct ttm_backend_func backend_func = {
+	.destroy = backend_func_destroy
+};
+
+/*
+ * TTM BO device
+ */
+
+static struct ttm_tt *bo_driver_ttm_tt_create(struct ttm_buffer_object *bo,
+					      uint32_t page_flags)
+{
+	struct ttm_tt *tt;
+	int ret;
+
+	tt = kzalloc(sizeof(*tt), GFP_KERNEL);
+	if (!tt)
+		return NULL;
+
+	tt->func = &backend_func;
+
+	ret = ttm_tt_init(tt, bo, page_flags);
+	if (ret < 0)
+		goto err_ttm_tt_init;
+
+	return tt;
+
+err_ttm_tt_init:
+	kfree(tt);
+	return NULL;
+}
+
+static int bo_driver_init_mem_type(struct ttm_bo_device *bdev, uint32_t type,
+				   struct ttm_mem_type_manager *man)
+{
+	switch (type) {
+	case TTM_PL_SYSTEM:
+		man->flags = TTM_MEMTYPE_FLAG_MAPPABLE;
+		man->available_caching = TTM_PL_MASK_CACHING;
+		man->default_caching = TTM_PL_FLAG_CACHED;
+		break;
+	case TTM_PL_VRAM:
+		man->func = &ttm_bo_manager_func;
+		man->flags = TTM_MEMTYPE_FLAG_FIXED |
+			     TTM_MEMTYPE_FLAG_MAPPABLE;
+		man->available_caching = TTM_PL_FLAG_UNCACHED |
+					 TTM_PL_FLAG_WC;
+		man->default_caching = TTM_PL_FLAG_WC;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static void bo_driver_evict_flags(struct ttm_buffer_object *bo,
+				  struct ttm_placement *placement)
+{
+	struct drm_gem_vram_object *gbo;
+
+	/* TTM may pass BOs that are not GEM VRAM BOs. */
+	if (!drm_is_gem_vram(bo))
+		return;
+
+	gbo = drm_gem_vram_of_bo(bo);
+
+	drm_gem_vram_bo_driver_evict_flags(gbo, placement);
+}
+
+static void bo_driver_move_notify(struct ttm_buffer_object *bo,
+				  bool evict,
+				  struct ttm_mem_reg *new_mem)
+{
+	struct drm_gem_vram_object *gbo;
+
+	/* TTM may pass BOs that are not GEM VRAM BOs. */
+	if (!drm_is_gem_vram(bo))
+		return;
+
+	gbo = drm_gem_vram_of_bo(bo);
+
+	drm_gem_vram_bo_driver_move_notify(gbo, evict, new_mem);
+}
+
+static int bo_driver_io_mem_reserve(struct ttm_bo_device *bdev,
+				    struct ttm_mem_reg *mem)
+{
+	struct ttm_mem_type_manager *man = bdev->man + mem->mem_type;
+	struct drm_vram_mm *vmm = drm_vram_mm_of_bdev(bdev);
+
+	if (!(man->flags & TTM_MEMTYPE_FLAG_MAPPABLE))
+		return -EINVAL;
+
+	mem->bus.addr = NULL;
+	mem->bus.size = mem->num_pages << PAGE_SHIFT;
+
+	switch (mem->mem_type) {
+	case TTM_PL_SYSTEM:	/* nothing to do */
+		mem->bus.offset = 0;
+		mem->bus.base = 0;
+		mem->bus.is_iomem = false;
+		break;
+	case TTM_PL_VRAM:
+		mem->bus.offset = mem->start << PAGE_SHIFT;
+		mem->bus.base = vmm->vram_base;
+		mem->bus.is_iomem = true;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static void bo_driver_io_mem_free(struct ttm_bo_device *bdev,
+				  struct ttm_mem_reg *mem)
+{ }
+
+static struct ttm_bo_driver bo_driver = {
+	.ttm_tt_create = bo_driver_ttm_tt_create,
+	.ttm_tt_populate = ttm_pool_populate,
+	.ttm_tt_unpopulate = ttm_pool_unpopulate,
+	.init_mem_type = bo_driver_init_mem_type,
+	.eviction_valuable = ttm_bo_eviction_valuable,
+	.evict_flags = bo_driver_evict_flags,
+	.move_notify = bo_driver_move_notify,
+	.io_mem_reserve = bo_driver_io_mem_reserve,
+	.io_mem_free = bo_driver_io_mem_free,
+};
+
+/*
+ * struct drm_vram_mm
+ */
+
+#if defined(CONFIG_DEBUG_FS)
+static int drm_vram_mm_debugfs(struct seq_file *m, void *data)
+{
+	struct drm_info_node *node = (struct drm_info_node *) m->private;
+	struct drm_vram_mm *vmm = node->minor->dev->vram_mm;
+	struct drm_mm *mm = vmm->bdev.man[TTM_PL_VRAM].priv;
+	struct drm_printer p = drm_seq_file_printer(m);
+
+	spin_lock(&ttm_bo_glob.lru_lock);
+	drm_mm_print(mm, &p);
+	spin_unlock(&ttm_bo_glob.lru_lock);
+	return 0;
+}
+
+static const struct drm_info_list drm_vram_mm_debugfs_list[] = {
+	{ "vram-mm", drm_vram_mm_debugfs, 0, NULL },
 };
