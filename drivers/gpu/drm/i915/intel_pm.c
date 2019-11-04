@@ -6594,6 +6594,22 @@ static void tgl_init_clock_gating(struct drm_i915_private *dev_priv)
 		   I915_READ(POWERGATE_ENABLE) | vd_pg_enable);
 }
 
+static void tgl_init_clock_gating(struct drm_i915_private *dev_priv)
+{
+	u32 vd_pg_enable = 0;
+	unsigned int i;
+
+	/* This is not a WA. Enable VD HCP & MFX_ENC powergate */
+	for (i = 0; i < I915_MAX_VCS; i++) {
+		if (HAS_ENGINE(dev_priv, _VCS(i)))
+			vd_pg_enable |= VDN_HCP_POWERGATE_ENABLE(i) |
+					VDN_MFX_POWERGATE_ENABLE(i);
+	}
+
+	I915_WRITE(POWERGATE_ENABLE,
+		   I915_READ(POWERGATE_ENABLE) | vd_pg_enable);
+}
+
 static void cnp_init_clock_gating(struct drm_i915_private *dev_priv)
 {
 	if (!HAS_PCH_CNP(dev_priv))
