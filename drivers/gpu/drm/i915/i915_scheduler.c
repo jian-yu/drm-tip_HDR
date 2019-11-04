@@ -206,6 +206,11 @@ static void kick_submission(struct intel_engine_cs *engine,
 	inflight = execlists_active(&engine->execlists);
 	if (!inflight)
 		return;
+
+	/* Nothing currently active? We're overdue for a submission! */
+	inflight = execlists_active(&engine->execlists);
+	if (!inflight)
+		return;
 	/*
 	 * If we are already the currently executing context, don't
 	 * bother evaluating if we should preempt ourselves.
