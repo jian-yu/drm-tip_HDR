@@ -19,6 +19,7 @@
 #include <linux/types.h>
 
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_bridge.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_dp_helper.h>
 #include <drm/drm_edid.h>
@@ -1303,6 +1304,7 @@ static const struct regmap_config anx78xx_regmap_config = {
 };
 
 static const u16 anx78xx_chipid_list[] = {
+	0x7808,
 	0x7812,
 	0x7814,
 	0x7818,
@@ -1354,15 +1356,18 @@ static int anx78xx_i2c_probe(struct i2c_client *client,
 
 	/* Map slave addresses of ANX7814 */
 	for (i = 0; i < I2C_NUM_ADDRESSES; i++) {
-		anx78xx->i2c_dummy[i] = i2c_new_dummy(client->adapter,
-						anx78xx_i2c_addresses[i] >> 1);
-		if (!anx78xx->i2c_dummy[i]) {
-			err = -ENOMEM;
-			DRM_ERROR("Failed to reserve I2C bus %02x\n",
-				  anx78xx_i2c_addresses[i]);
+		struct i2c_client *i2c_dummy;
+
+		i2c_dummy = i2c_new_dummy_device(client->adapter,
+						 anx78xx_i2c_addresses[i] >> 1);
+		if (IS_ERR(i2c_dummy)) {
+			err = PTR_ERR(i2c_dummy);
+			DRM_ERROR("Failed to reserve I2C bus %02x: %d\n",
+				  anx78xx_i2c_addresses[i], err);
 			goto err_unregister_i2c;
 		}
 
+		anx78xx->i2c_dummy[i] = i2c_dummy;
 		anx78xx->map[i] = devm_regmap_init_i2c(anx78xx->i2c_dummy[i],
 						       &anx78xx_regmap_config);
 		if (IS_ERR(anx78xx->map[i])) {
@@ -1467,7 +1472,10 @@ MODULE_DEVICE_TABLE(i2c, anx78xx_id);
 
 #if IS_ENABLED(CONFIG_OF)
 static const struct of_device_id anx78xx_match_table[] = {
+	{ .compatible = "analogix,anx7808", },
+	{ .compatible = "analogix,anx7812", },
 	{ .compatible = "analogix,anx7814", },
+	{ .compatible = "analogix,anx7818", },
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, anx78xx_match_table);

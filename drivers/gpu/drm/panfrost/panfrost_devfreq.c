@@ -21,8 +21,39 @@ static int panfrost_devfreq_target(struct device *dev, unsigned long *freq,
 	struct panfrost_device *pfdev = dev_get_drvdata(dev);
 	int err;
 
-	err = dev_pm_opp_set_rate(dev, *freq);
-	if (err)
+	opp = devfreq_recommended_opp(dev, freq, flags);
+	if (IS_ERR(opp))
+		return PTR_ERR(opp);
+
+	target_rate = dev_pm_opp_get_freq(opp);
+	target_volt = dev_pm_opp_get_voltage(opp);
+	dev_pm_opp_put(opp);
+
+	if (old_clk_rate == target_rate)
+		return 0;
+
+	/*
+	 * If frequency scaling from low to high, adjust voltage first.
+	 * If frequency scaling from high to low, adjust frequency first.
+	 */
+	if (old_clk_rate < target_rate) {
+		err = regulator_set_voltage(pfdev->regulator, target_volt,
+					    target_volt);
+		if (err) {
+			dev_err(dev, "Cannot set voltage %lu uV\n",
+				target_volt);
+			return err;
+		}
+	}
+
+	err = clk_set_rate(pfdev->clock, target_rate);
+	if (err) {
+		dev_err(dev, "Cannot set frequency %lu (%d)\n", target_rate,
+			err);
+		if (pfdev->regulator)
+			regulator_set_voltage(pfdev->regulator,
+					      pfdev->devfreq.cur_volt,
+					      pfdev->devfreq.cur_volt);
 		return err;
 
 	*freq = clk_get_rate(pfdev->clock);
